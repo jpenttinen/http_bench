@@ -2,13 +2,11 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
-	"net"
 	"net/http"
 	_ "net/http/pprof"
 	gourl "net/url"
@@ -26,7 +24,7 @@ import (
 	"text/template"
 	"time"
 
-	"golang.org/x/net/http2"
+	"github.com/valyala/fasthttp"
 )
 
 // ========================= function begin =========================
@@ -442,13 +440,20 @@ func (b *StressWorker) Wait() *StressResult {
 	return &(b.resultList[0])
 }
 
-func (b *StressWorker) runWorker(n int, client *http.Client) {
+func (b *StressWorker) runWorker(n int, client *fasthttp.Client) {
 	var throttle <-chan time.Time
 	var runCounts int = 0
 
 	if b.RequestParams.Qps > 0 {
 		throttle = time.Tick(time.Duration(1e6/(b.RequestParams.Qps)) * time.Microsecond)
 	}
+
+	httpReq := fasthttp.AcquireRequest()
+	httpResp := fasthttp.AcquireResponse()
+	defer func() {
+		fasthttp.ReleaseRequest(httpReq)   // <- do not forget to release
+		fasthttp.ReleaseResponse(httpResp) // <- do not forget to release
+	}()
 
 	// random set seed
 	rand.Seed(time.Now().UnixNano())
@@ -469,16 +474,13 @@ func (b *StressWorker) runWorker(n int, client *http.Client) {
 
 		randv := rand.Intn(len(b.RequestParams.Urls)) % len(b.RequestParams.Urls)
 		// if req = nil and break
-		req := b.getRequest(b.RequestParams.Urls[randv])
-		if req == nil {
-			b.Stop(false)
-			break
-		}
-		resp, err := client.Do(req)
+		b.getRequest(b.RequestParams.Urls[randv], httpReq)
+		err := client.Do(httpReq, httpResp)
 		if err == nil {
-			size = resp.ContentLength
-			code = resp.StatusCode
-			resp.Body.Close()
+			size = int64(httpResp.Header.ContentLength())
+			code = httpResp.StatusCode()
+		} else {
+			b.Stop(false)
 		}
 
 		b.results <- &result{
@@ -513,46 +515,6 @@ func (b *StressWorker) runWorkers() {
 		verbosePrint(VERBOSE_ERROR, "Parse request body function err: "+err.Error()+"\n")
 	}
 
-	client := &http.Client{
-		Timeout: time.Duration(b.RequestParams.Timeout) * time.Millisecond,
-	}
-
-	switch b.RequestParams.RequestHttpType {
-	case TYPE_HTTP2:
-		tr := &http2.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-			DisableCompression: b.RequestParams.DisableCompression,
-		}
-		client.Transport = tr
-	case TYPE_HTTP1:
-		tr := &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-			DisableCompression:  b.RequestParams.DisableCompression,
-			DisableKeepAlives:   b.RequestParams.DisableKeepAlives,
-			TLSHandshakeTimeout: time.Duration(b.RequestParams.Timeout) * time.Millisecond,
-			TLSNextProto:        make(map[string]func(string, *tls.Conn) http.RoundTripper),
-			DialContext: (&net.Dialer{
-				Timeout:   time.Duration(b.RequestParams.Timeout) * time.Second,
-				KeepAlive: time.Duration(60) * time.Second,
-			}).DialContext,
-			MaxIdleConns:        200,
-			MaxIdleConnsPerHost: 200,
-			MaxConnsPerHost:     200,
-			IdleConnTimeout:     time.Duration(60) * time.Second,
-		}
-		if proxyUrl != nil {
-			tr.Proxy = http.ProxyURL(proxyUrl)
-		}
-		client.Transport = tr
-	case TYPE_HTTP3: // TODO: not support http3
-		fmt.Fprintf(os.Stderr, "Not support %s\n", TYPE_HTTP3)
-		return
-	}
-
 	// Ignore the case where b.RequestParams.N % b.RequestParams.C != 0.
 	for i := 0; i < b.RequestParams.C && !(b.IsStop()); i++ {
 		wg.Add(1)
@@ -564,6 +526,12 @@ func (b *StressWorker) runWorkers() {
 				}
 			}()
 
+			client := &fasthttp.Client{
+				ReadTimeout:        time.Duration(b.RequestParams.Timeout) * time.Millisecond,
+				WriteTimeout:       time.Duration(b.RequestParams.Timeout) * time.Millisecond,
+				MaxConnWaitTimeout: time.Duration(b.RequestParams.Timeout) * time.Millisecond,
+				MaxConnsPerHost:    2,
+			}
 			b.runWorker(b.RequestParams.N/b.RequestParams.C, client)
 		}()
 	}
@@ -574,7 +542,7 @@ func (b *StressWorker) runWorkers() {
 	close(b.results)
 }
 
-func (b *StressWorker) getRequest(url string) *http.Request {
+func (b *StressWorker) getRequest(url string, req *fasthttp.Request) {
 	var urlBytes, bodyBytes bytes.Buffer
 
 	if b.urlTemplate != nil && len(url) > 0 {
@@ -590,17 +558,16 @@ func (b *StressWorker) getRequest(url string) *http.Request {
 	}
 
 	if !checkURL(urlBytes.String()) {
-		return nil
+		return
 	}
 
 	verbosePrint(VERBOSE_TRACE, "Request url: %s\n", urlBytes.String())
 	verbosePrint(VERBOSE_TRACE, "Request body: %s\n", bodyBytes.String())
-	req, err := http.NewRequest(b.RequestParams.RequestMethod, urlBytes.String(), strings.NewReader(bodyBytes.String()))
-	if err != nil {
-		return nil
+	req.SetRequestURI(url)
+	req.SetBodyString(bodyBytes.String())
+	for key, value := range b.RequestParams.Headers {
+		req.Header.Set(key, strings.Join(value, "; "))
 	}
-	req.Header = b.RequestParams.Headers
-	return req
 }
 
 func (b *StressWorker) collectReport() {
