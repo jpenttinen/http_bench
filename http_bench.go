@@ -552,6 +552,7 @@ func (b *StressWorker) getClient() *StressClient {
 			},
 		}
 	case TYPE_HTTP1:
+		addr, _ := net.ResolveTCPAddr("tcp", *ipAddr+":0")
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -563,6 +564,11 @@ func (b *StressWorker) getClient() *StressClient {
 			DialContext: (&net.Dialer{
 				Timeout:   time.Duration(b.RequestParams.Timeout) * time.Second,
 				KeepAlive: time.Duration(60) * time.Second,
+				//LocalAddr: &net.TCPAddr{
+				//	IP:   net.ParseIP(*ipAddr),
+				//	Port: 0,
+				LocalAddr: addr,
+				//,}
 			}).DialContext,
 			MaxIdleConns:        10,
 			MaxIdleConnsPerHost: 10,
@@ -958,6 +964,7 @@ var (
 	urlFile           = flag.String("url-file", "", "")
 	bodyFile          = flag.String("body-file", "", "")
 	scriptFile        = flag.String("script", "", "")
+	ipAddr            = flag.String("ipaddr", "", "")
 	requestWorkerList = func(paramsJson []byte, stressTest *StressWorker) []StressResult {
 		var wg sync.WaitGroup
 		var stressResult []StressResult
@@ -992,7 +999,8 @@ Options:
 	-H  Custom HTTP header. You can specify as many as needed by repeating the flag.
 		for example, -H "Accept: text/html" -H "Content-Type: application/xml", 
 		but "Host: ***", replace that with -host.
-	-http  Support http1, http2, ws, wss (default http1).
+	-http  Support http1, http2, http3, ws, wss (default http1).
+	-ipaddr Bind to IP address (use it as source IP address)
 	-body  Request body, default empty.
 	-a  Basic authentication, username:password.
 	-x  HTTP Proxy address as host:port.
@@ -1104,6 +1112,17 @@ func main() {
 			}
 		}
 	}
+
+	if *ipAddr != "" {
+		//ipAddrValue := *ipAddr
+		if net.ParseIP(*ipAddr) == nil {
+			usageAndExit("IP address parameter is invalid. Accepted values are 192.168.1.1 or fe80::49f:3ee:fed9:ac55\n")
+		}
+		//srcAddress, _ := net.ResolveTCPAddr("tcp", ipAddrValue)
+	}
+	//} else {
+	//	usageAndExit("-ipaddr is mandatory parameter\n")
+	//}
 
 	switch strings.ToLower(*httpType) {
 	case TYPE_HTTP1, TYPE_HTTP2, TYPE_WS:
