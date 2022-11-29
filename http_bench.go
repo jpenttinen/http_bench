@@ -1114,15 +1114,10 @@ func main() {
 	}
 
 	if *ipAddr != "" {
-		//ipAddrValue := *ipAddr
 		if net.ParseIP(*ipAddr) == nil {
 			usageAndExit("IP address parameter is invalid. Accepted values are 192.168.1.1 or fe80::49f:3ee:fed9:ac55\n")
 		}
-		//srcAddress, _ := net.ResolveTCPAddr("tcp", ipAddrValue)
 	}
-	//} else {
-	//	usageAndExit("-ipaddr is mandatory parameter\n")
-	//}
 
 	switch strings.ToLower(*httpType) {
 	case TYPE_HTTP1, TYPE_HTTP2, TYPE_WS:
