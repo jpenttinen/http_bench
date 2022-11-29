@@ -539,6 +539,7 @@ func (b *StressWorker) getClient() *StressClient {
 					RootCAs:            http3Pool,
 					InsecureSkipVerify: true,
 				},
+				DisableCompression: b.RequestParams.DisableCompression,
 			},
 		}
 	case TYPE_HTTP2:
